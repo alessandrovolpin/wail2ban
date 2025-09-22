@@ -237,7 +237,8 @@ function jail_release ($IP) {
 
 # Add the Firewall Rule
 function firewall_add ($IP, $ExpireDate) { 
-	$Expire = (get-date $ExpireDate -format u).replace("Z","")
+	# Use InvariantCulture to ensure consistent date format regardless of system locale
+	$Expire = $ExpireDate.ToString("yyyy-MM-dd HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)
 	switch($BLOCK_TYPE) {
 		"NETSH" { $Rule = "netsh advfirewall firewall add rule name=`"$FirewallRulePrefix $IP`" dir=in protocol=any action=block remoteip=$IP description=`"Expire: $Expire`"" }
 		default { error "Don't have a known Block Type. $BLOCK_TYPE" }
@@ -283,12 +284,32 @@ function unban_old_records {
 			$IP = $inmate.Name.substring($FirewallRulePrefix.length+1)
 			$ReleaseDate = $inmate.Description.substring("Expire: ".Length)
 			
-			if ($([int]([datetime]$ReleaseDate- (Get-Date)).TotalSeconds) -lt 0) { 
-				debug "Unban old records: $IP looks old enough $(get-date $ReleaseDate -format G)"
-				jail_release $IP 
-			} 
+			try {
+				$ReleaseDateParsed = ParseDateInvariant $ReleaseDate
+				$SecondsUntilExpire = ($ReleaseDateParsed - (Get-Date)).TotalSeconds
+				
+				debug "Checking IP $IP with expire date '$ReleaseDate' (parsed: $ReleaseDateParsed), seconds until expire: $([math]::Round($SecondsUntilExpire))"
+				
+				if ($SecondsUntilExpire -lt 0) { 
+					debug "Unban old records: $IP has expired (was due $(get-date $ReleaseDateParsed -format G))"
+					jail_release $IP 
+				} else {
+					debug "IP $IP still valid, expires in $([math]::Round($SecondsUntilExpire/60)) minutes"
+				}
+			} catch {
+				warning "Failed to parse expire date '$ReleaseDate' for IP $IP. Error: $($_.Exception.Message). Skipping expiration check."
+			}
 		}
 	}	
+}
+
+# Parse date strings using InvariantCulture to avoid locale issues
+function ParseDateInvariant([String] $DateString, [String] $Format = "yyyy-MM-dd HH:mm:ss") {
+	try {
+		return [datetime]::ParseExact($DateString, $Format, [System.Globalization.CultureInfo]::InvariantCulture)
+	} catch {
+		throw "Failed to parse date '$DateString' with format '$Format': $($_.Exception.Message)"
+	}
 }
 
 #Convert the TimeGenerated time into Epoch
